@@ -21,6 +21,7 @@ function App() {
   const [assets, setAssets] = useState<SilverAsset[]>([])
   const [isAddingAsset, setIsAddingAsset] = useState(false)
   const [weeklyChange, setWeeklyChange] = useState<number>(0)
+  const [priceHistory, setPriceHistory] = useState<number[]>([])
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -110,14 +111,29 @@ function App() {
         })
       }
       
-      // Calculate weekly change based on previous close vs current price
-      if (priceData.prev_close_price && priceData.prev_close_price > 0) {
-        const change = ((priceData.price - priceData.prev_close_price) / priceData.prev_close_price) * 100
-        setWeeklyChange(change)
+      // Load price history from database and calculate real weekly change
+      const dbPriceHistory = await silverDB.getPriceHistory(30) // Get last 30 days
+      if (dbPriceHistory.length > 0) {
+        // Find price from exactly 7 days ago
+        const sevenDaysAgo = new Date()
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+        
+        const weekAgoPrice = dbPriceHistory.find(entry => {
+          const entryDate = new Date(entry.timestamp)
+          return Math.abs(entryDate.getTime() - sevenDaysAgo.getTime()) < 24 * 60 * 60 * 1000 // Within 24 hours
+        })
+        
+        if (weekAgoPrice) {
+          const change = ((priceData.price - weekAgoPrice.price_per_oz) / weekAgoPrice.price_per_oz) * 100
+          setWeeklyChange(change)
+          console.log(`Weekly change: ${change.toFixed(2)}% (${weekAgoPrice.price_per_oz} → ${priceData.price})`)
+        } else {
+          setWeeklyChange(0.0) // No data from exactly 7 days ago
+          console.log('No price data from 7 days ago, showing 0.0%')
+        }
       } else {
-        // Fallback to simulated change if no previous close data
-        const randomChange = (Math.random() - 0.5) * 8 // -4% to +4%
-        setWeeklyChange(randomChange)
+        setWeeklyChange(0.0) // No historical data yet
+        console.log('No price history available, showing 0.0%')
       }
       
       console.log('Loaded silver price data:', priceData)
@@ -200,6 +216,31 @@ function App() {
     return calculateTotalWorth() - calculateTotalInvested()
   }
 
+  const calculateTotalSilverContentValueUSD = () => {
+    // Calculate what all silver is worth based on current spot price (no premiums)
+    return assets.reduce((total, asset) => total + (asset.silver_weight_oz * currentSilverPrice), 0)
+  }
+
+  const calculateTotalSilverContentValueAtPurchaseUSD = () => {
+    // Calculate what all silver was worth when purchased (no premiums)
+    return assets.reduce((total, asset) => total + (asset.silver_weight_oz * asset.silver_price_at_purchase), 0)
+  }
+
+  const getTotalWorthStatus = () => {
+    const totalWorthUSD = calculateTotalWorthUSD()
+    const totalInvestedUSD = calculateTotalInvestedUSD()
+    const silverContentValueUSD = calculateTotalSilverContentValueUSD()
+    const silverContentAtPurchaseUSD = calculateTotalSilverContentValueAtPurchaseUSD()
+    
+    if (totalWorthUSD >= totalInvestedUSD) {
+      return 'profit' // Green - making money
+    } else if (silverContentValueUSD >= silverContentAtPurchaseUSD) {
+      return 'premium-loss' // Orange - silver gained value but still below total due to premiums
+    } else {
+      return 'loss' // Red - actual silver value loss
+    }
+  }
+
   const addAsset = async () => {
     const troyOunces = convertToTroyOz(newAsset.silver_weight, newAsset.weight_unit)
     
@@ -253,7 +294,25 @@ function App() {
   }
 
   const profitLoss = calculateProfitLoss()
-  const isProfit = profitLoss >= 0
+  const totalWorthStatus = getTotalWorthStatus()
+  
+  const getTotalWorthColor = () => {
+    switch(totalWorthStatus) {
+      case 'profit': return 'text-green-600'
+      case 'premium-loss': return 'text-orange-600' 
+      case 'loss': return 'text-red-600'
+      default: return 'text-gray-600'
+    }
+  }
+  
+  const getProfitLossColor = () => {
+    switch(totalWorthStatus) {
+      case 'profit': return 'text-green-600'
+      case 'premium-loss': return 'text-orange-600' 
+      case 'loss': return 'text-red-600'
+      default: return 'text-gray-600'
+    }
+  }
 
   if (loading) {
     return (
@@ -306,16 +365,19 @@ function App() {
         <div className="bg-white rounded-2xl shadow-xl p-8 mb-8 text-center border-2 border-gray-100">
           <div className="mb-4">
             <p className="text-lg text-gray-500 uppercase tracking-wide mb-2">Total Silver Worth</p>
-            <p className={`text-6xl font-bold mb-4 ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
+            <p className={`text-6xl font-bold mb-4 ${getTotalWorthColor()}`}>
               €{calculateTotalWorth().toFixed(2)}
             </p>
             
             {/* Weekly Change */}
             <div className={`inline-flex items-center px-4 py-2 rounded-full text-sm font-medium ${
-              weeklyChange >= 0 ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+              weeklyChange === 0 ? 'bg-gray-100 text-gray-800' : 
+              weeklyChange > 0 ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
             }`}>
-              {weeklyChange >= 0 ? <TrendingUp size={16} className="mr-1" /> : <TrendingDown size={16} className="mr-1" />}
-              {weeklyChange >= 0 ? '+' : ''}{weeklyChange.toFixed(1)}% this week
+              {weeklyChange === 0 ? <TrendingUp size={16} className="mr-1" /> :
+               weeklyChange > 0 ? <TrendingUp size={16} className="mr-1" /> : <TrendingDown size={16} className="mr-1" />}
+              {weeklyChange === 0 ? '0.0% this week' : 
+               `${weeklyChange > 0 ? '+' : ''}${weeklyChange.toFixed(1)}% this week`}
             </div>
           </div>
         </div>
@@ -332,10 +394,10 @@ function App() {
                 <p className="text-xs text-gray-400">Premium paid: €{calculateTotalPremiumPaid().toFixed(2)}</p>
               </div>
             </div>
-            <div className={`text-right ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
+            <div className={`text-right ${getProfitLossColor()}`}>
               <p className="text-sm uppercase tracking-wide">Profit/Loss</p>
               <p className="text-xl font-bold">
-                {isProfit ? '+' : ''}€{profitLoss.toFixed(2)}
+                {profitLoss >= 0 ? '+' : ''}€{profitLoss.toFixed(2)}
               </p>
             </div>
           </div>
