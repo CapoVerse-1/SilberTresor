@@ -1,17 +1,18 @@
 import { useState, useEffect } from 'react'
 import { Plus, TrendingUp, TrendingDown, Coins, DollarSign, RefreshCw } from 'lucide-react'
 import { silverPriceService } from './lib/silverApi'
+import { silverDB } from './lib/supabase'
 
 // Type definitions for frontend
 interface SilverAsset {
-  id: string
+  id?: string
   name: string
   purchase_price: number
   silver_price_at_purchase: number
   purchase_date: string
   silver_weight_oz: number
-  created_at: string
-  updated_at: string
+  created_at?: string
+  updated_at?: string
 }
 
 function App() {
@@ -69,6 +70,20 @@ function App() {
       setCurrentSilverPrice(priceData.price)
       setLastUpdated(new Date())
       
+      // Save price history to database (only if it's a real price, not fallback)
+      if (priceData.price > 0 && priceData.exchange !== 'FALLBACK') {
+        await silverDB.savePriceHistory({
+          price_per_oz: priceData.price,
+          timestamp: new Date().toISOString(),
+          source: 'gold-api.com',
+          exchange: priceData.exchange,
+          prev_close_price: priceData.prev_close_price,
+          open_price: priceData.open_price,
+          high_price: priceData.high_price,
+          low_price: priceData.low_price
+        })
+      }
+      
       // Calculate weekly change based on previous close vs current price
       if (priceData.prev_close_price && priceData.prev_close_price > 0) {
         const change = ((priceData.price - priceData.prev_close_price) / priceData.prev_close_price) * 100
@@ -81,10 +96,28 @@ function App() {
       
       console.log('Loaded silver price data:', priceData)
       
+      // Load assets from database (only on initial load, not refresh)
+      if (!isRefresh) {
+        const dbAssets = await silverDB.getAllAssets()
+        // Convert to our local interface
+        const formattedAssets: SilverAsset[] = dbAssets.map(asset => ({
+          id: asset.id,
+          name: asset.name,
+          purchase_price: asset.purchase_price,
+          silver_price_at_purchase: asset.silver_price_at_purchase,
+          purchase_date: asset.purchase_date,
+          silver_weight_oz: asset.silver_weight_oz,
+          created_at: asset.created_at,
+          updated_at: asset.updated_at
+        }))
+        setAssets(formattedAssets)
+        console.log('Loaded assets from database:', formattedAssets)
+      }
+      
     } catch (error) {
       console.error('Error loading data:', error)
       // Set fallback values
-      setCurrentSilverPrice(24.50)
+      setCurrentSilverPrice(31.25)
       setWeeklyChange(0)
       setLastUpdated(new Date())
     } finally {
@@ -131,30 +164,51 @@ function App() {
     return calculateTotalWorth() - calculateTotalInvested()
   }
 
-  const addAsset = () => {
+  const addAsset = async () => {
     const troyOunces = convertToTroyOz(newAsset.silver_weight, newAsset.weight_unit)
     
-    const asset: SilverAsset = {
-      id: Date.now().toString(),
+    const assetData = {
       name: newAsset.name,
       purchase_price: newAsset.purchase_price,
       silver_price_at_purchase: newAsset.silver_price_at_purchase,
-      purchase_date: new Date(newAsset.purchase_date).toISOString(),
-      silver_weight_oz: troyOunces,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      purchase_date: newAsset.purchase_date,
+      silver_weight_oz: troyOunces
     }
     
-    setAssets([...assets, asset])
-    setNewAsset({ 
-      name: '', 
-      purchase_price: 0, 
-      silver_price_at_purchase: 0, 
-      silver_weight: 0, 
-      weight_unit: 'oz',
-      purchase_date: new Date().toISOString().split('T')[0]
-    })
-    setIsAddingAsset(false)
+    console.log('Adding asset:', assetData)
+    
+    // Save to database
+    const savedAsset = await silverDB.saveAsset(assetData)
+    
+    if (savedAsset) {
+      // Add to local state (convert to our interface)
+      const newAsset: SilverAsset = {
+        id: savedAsset.id,
+        name: savedAsset.name,
+        purchase_price: savedAsset.purchase_price,
+        silver_price_at_purchase: savedAsset.silver_price_at_purchase,
+        purchase_date: savedAsset.purchase_date,
+        silver_weight_oz: savedAsset.silver_weight_oz,
+        created_at: savedAsset.created_at,
+        updated_at: savedAsset.updated_at
+      }
+      setAssets([newAsset, ...assets])
+      console.log('Asset saved successfully:', savedAsset)
+      
+      // Reset form
+      setNewAsset({ 
+        name: '', 
+        purchase_price: 0, 
+        silver_price_at_purchase: 0, 
+        silver_weight: 0, 
+        weight_unit: 'oz',
+        purchase_date: new Date().toISOString().split('T')[0]
+      })
+      setIsAddingAsset(false)
+    } else {
+      console.error('Failed to save asset to database')
+      alert('Failed to save asset. Please check your database connection.')
+    }
   }
 
   const profitLoss = calculateProfitLoss()
@@ -306,7 +360,7 @@ function App() {
                           Spot: ${asset.silver_price_at_purchase.toFixed(2)}/oz • Premium: ${collectorsPremium.toFixed(2)}
                         </p>
                         <p className="text-xs text-gray-400">
-                          {new Date(asset.purchase_date).toLocaleDateString()}
+                          {new Date(asset.purchase_date + 'T00:00:00').toLocaleDateString()}
                         </p>
                       </div>
                       <div className="text-right ml-3">
