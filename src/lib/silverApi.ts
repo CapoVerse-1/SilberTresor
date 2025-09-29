@@ -1,4 +1,4 @@
-import axios from 'axios'
+// Using native fetch instead of axios for better compatibility
 
 export interface SilverPriceResponse {
   timestamp: number
@@ -15,32 +15,41 @@ export interface SilverPriceResponse {
 }
 
 export class SilverPriceService {
-  private readonly goldApiURL = 'https://api.gold-api.com/price'
+  private readonly metalsDevURL = 'https://api.metals.dev/v1/latest'
+  private readonly apiKey = '3J1BBJMGUNVXULQGNKVF634QGNKVF'
   
   async getCurrentSilverPrice(): Promise<number> {
-    console.log('Fetching silver price from gold-api.com...')
+    console.log('Fetching silver price from metals.dev...')
     
     try {
-      const response = await axios.get(`${this.goldApiURL}/XAG`, {
-        timeout: 10000
+      // Exact URL matching your curl command
+      const url = `${this.metalsDevURL}?api_key=${this.apiKey}&currency=USD&unit=toz`
+      console.log('Fetching from URL:', url)
+      
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json'
+        }
       })
       
-      console.log('Silver price response:', response.data)
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
       
-      if (response.data && typeof response.data.price === 'number') {
-        console.log('Successfully got silver price:', response.data.price)
-        return response.data.price
+      const data = await response.json()
+      console.log('Silver price response:', data)
+      
+      // Check if response has silver data in metals object
+      if (data && data.metals && data.metals.silver && typeof data.metals.silver === 'number') {
+        console.log('Successfully got silver price:', data.metals.silver)
+        return data.metals.silver
       } else {
-        console.error('Invalid response format:', response.data)
+        console.error('Invalid response format - no metals.silver data:', data)
         return 31.25
       }
     } catch (error) {
       console.error('Error fetching silver price:', error)
-      
-      if (axios.isAxiosError(error)) {
-        console.error('Response status:', error.response?.status)
-        console.error('Response data:', error.response?.data)
-      }
       
       // Return current market price as fallback
       console.log('Using fallback price: $31.25')
@@ -88,20 +97,32 @@ export class SilverPriceService {
 
   async getCurrentSilverPriceWithDetails(): Promise<SilverPriceResponse> {
     try {
-      const response = await axios.get(`${this.goldApiURL}/XAG`, {
-        timeout: 10000
+      // Exact URL matching your curl command
+      const url = `${this.metalsDevURL}?api_key=${this.apiKey}&currency=USD&unit=toz`
+      console.log('Fetching detailed data from URL:', url)
+      
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json'
+        }
       })
       
-      console.log('Detailed silver price response:', response.data)
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
       
-      if (response.data && typeof response.data.price === 'number') {
-        // Convert the simple API response to our expected format
-        const price = response.data.price
+      const data = await response.json()
+      console.log('Detailed silver price response:', data)
+      
+      if (data && data.metals && data.metals.silver && typeof data.metals.silver === 'number') {
+        // Convert the metals.dev API response to our expected format
+        const price = data.metals.silver
         return {
           timestamp: Math.floor(Date.now() / 1000),
           metal: 'XAG',
           currency: 'USD',
-          exchange: 'GOLD-API',
+          exchange: 'METALS-DEV',
           symbol: 'XAG',
           prev_close_price: price - 0.50,
           open_price: price + 0.15,
@@ -111,16 +132,11 @@ export class SilverPriceService {
           price: price
         }
       } else {
-        console.error('Invalid detailed response format:', response.data)
+        console.error('Invalid detailed response format - no metals.silver data:', data)
         throw new Error('Invalid response format')
       }
     } catch (error) {
       console.error('Error fetching detailed silver price:', error)
-      
-      if (axios.isAxiosError(error)) {
-        console.error('Response status:', error.response?.status)
-        console.error('Response data:', error.response?.data)
-      }
       
       // Return fallback data with current realistic silver price
       const currentPrice = 31.25

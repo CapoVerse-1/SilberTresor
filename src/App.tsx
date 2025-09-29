@@ -16,7 +16,8 @@ interface SilverAsset {
 }
 
 function App() {
-  const [currentSilverPrice, setCurrentSilverPrice] = useState<number>(0)
+  const [currentSilverPrice, setCurrentSilverPrice] = useState<number>(0) // USD price from API (for charts)
+  const [exchangeRate, setExchangeRate] = useState<number>(1.17) // USD to EUR rate
   const [assets, setAssets] = useState<SilverAsset[]>([])
   const [isAddingAsset, setIsAddingAsset] = useState(false)
   const [weeklyChange, setWeeklyChange] = useState<number>(0)
@@ -48,14 +49,30 @@ function App() {
   useEffect(() => {
     loadData()
     
-    // Set up automatic price updates every 30 seconds
-    const interval = setInterval(() => {
-      loadData(true) // Refresh without showing main loading spinner
-    }, 30000) // 30 seconds
+    // Temporary disable auto refresh to debug API issues
+    // const interval = setInterval(() => {
+    //   loadData(true) // Refresh without showing main loading spinner
+    // }, 30000) // 30 seconds
     
-    // Cleanup interval on component unmount
-    return () => clearInterval(interval)
+    // return () => clearInterval(interval)
   }, [])
+
+  // Currency conversion functions
+  const convertUSDtoEUR = (usdAmount: number): number => {
+    return usdAmount / exchangeRate
+  }
+
+  // Fetch current USD/EUR exchange rate
+  const fetchExchangeRate = async (): Promise<number> => {
+    try {
+      const response = await fetch('https://api.exchangerate-api.com/v4/latest/USD')
+      const data = await response.json()
+      return data.rates.EUR || 0.85 // Fallback to approximate rate
+    } catch (error) {
+      console.error('Error fetching exchange rate:', error)
+      return 0.85 // Fallback rate (1 USD = 0.85 EUR approximately)
+    }
+  }
 
   const loadData = async (isRefresh = false) => {
     if (isRefresh) {
@@ -65,9 +82,14 @@ function App() {
     }
     
     try {
-      // Load current silver price with full details
+      // Load current exchange rate first
+      const rate = await fetchExchangeRate()
+      setExchangeRate(rate)
+      console.log('Current USD/EUR exchange rate:', rate)
+      
+      // Load current silver price with full details (in USD)
       const priceData = await silverPriceService.getCurrentSilverPriceWithDetails()
-      setCurrentSilverPrice(priceData.price)
+      setCurrentSilverPrice(priceData.price) // Keep USD for chart reference
       setLastUpdated(new Date())
       
       // Save price history to database (only if it's a real price, not fallback)
@@ -117,7 +139,8 @@ function App() {
     } catch (error) {
       console.error('Error loading data:', error)
       // Set fallback values
-      setCurrentSilverPrice(31.25)
+      const fallbackPriceUSD = 31.25
+      setCurrentSilverPrice(fallbackPriceUSD) // USD fallback
       setWeeklyChange(0)
       setLastUpdated(new Date())
     } finally {
@@ -131,7 +154,11 @@ function App() {
   }
 
   const calculateTotalWorth = () => {
-    return assets.reduce((total, asset) => total + (asset.silver_weight_oz * currentSilverPrice), 0)
+    // Calculate worth: USD silver price × weight, then convert to EUR for display
+    return assets.reduce((total, asset) => {
+      const worthInUSD = asset.silver_weight_oz * currentSilverPrice
+      return total + convertUSDtoEUR(worthInUSD)
+    }, 0)
   }
 
   const calculateTotalInvested = () => {
@@ -147,16 +174,21 @@ function App() {
   }
 
   const calculateCollectorsPremium = (asset: SilverAsset) => {
-    const silverValueAtPurchase = asset.silver_weight_oz * asset.silver_price_at_purchase
-    return asset.purchase_price - silverValueAtPurchase
+    // Silver value at purchase was in USD, convert to EUR for comparison with EUR purchase price
+    const silverValueAtPurchaseUSD = asset.silver_weight_oz * asset.silver_price_at_purchase
+    const silverValueAtPurchaseEUR = convertUSDtoEUR(silverValueAtPurchaseUSD)
+    return asset.purchase_price - silverValueAtPurchaseEUR // Both in EUR now
   }
 
   const getAssetStatus = (asset: SilverAsset) => {
-    const currentWorth = asset.silver_weight_oz * currentSilverPrice
-    const silverValueAtPurchase = asset.silver_weight_oz * asset.silver_price_at_purchase
+    // Current worth: USD silver price × weight, converted to EUR
+    const currentWorthUSD = asset.silver_weight_oz * currentSilverPrice
+    const currentWorth = convertUSDtoEUR(currentWorthUSD)
+    // Silver value at purchase was stored in USD, convert to EUR for comparison
+    const silverValueAtPurchaseEUR = convertUSDtoEUR(asset.silver_weight_oz * asset.silver_price_at_purchase)
     
-    if (currentWorth < silverValueAtPurchase) return 'loss' // Red - below silver value
-    if (currentWorth < asset.purchase_price) return 'breaking-even' // Orange - above silver but below total paid
+    if (currentWorth < silverValueAtPurchaseEUR) return 'loss' // Red - below silver value
+    if (currentWorth < asset.purchase_price) return 'breaking-even' // Orange - above silver but below total paid (EUR)
     return 'profit' // Green - above what you paid
   }
 
@@ -169,8 +201,8 @@ function App() {
     
     const assetData = {
       name: newAsset.name,
-      purchase_price: newAsset.purchase_price,
-      silver_price_at_purchase: newAsset.silver_price_at_purchase,
+      purchase_price: newAsset.purchase_price, // EUR - what user actually paid
+      silver_price_at_purchase: currentSilverPrice, // USD - current USD price for chart reference  
       purchase_date: newAsset.purchase_date,
       silver_weight_oz: troyOunces
     }
@@ -266,7 +298,7 @@ function App() {
           <div className="mb-4">
             <p className="text-lg text-gray-500 uppercase tracking-wide mb-2">Total Silver Worth</p>
             <p className={`text-6xl font-bold mb-4 ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
-              ${calculateTotalWorth().toFixed(2)}
+              €{calculateTotalWorth().toFixed(2)}
             </p>
             
             {/* Weekly Change */}
@@ -286,15 +318,15 @@ function App() {
               <DollarSign className="h-8 w-8 text-blue-600 mr-3" />
               <div>
                 <p className="text-sm text-gray-500 uppercase tracking-wide">Total Invested</p>
-                <p className="text-2xl font-bold text-gray-900">${calculateTotalInvested().toFixed(2)}</p>
+                <p className="text-2xl font-bold text-gray-900">€{calculateTotalInvested().toFixed(2)}</p>
                 <p className="text-sm text-gray-500">{calculateTotalGrams().toFixed(1)}g total silver</p>
-                <p className="text-xs text-gray-400">Premium paid: ${calculateTotalPremiumPaid().toFixed(2)}</p>
+                <p className="text-xs text-gray-400">Premium paid: €{calculateTotalPremiumPaid().toFixed(2)}</p>
               </div>
             </div>
             <div className={`text-right ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
               <p className="text-sm uppercase tracking-wide">Profit/Loss</p>
               <p className="text-xl font-bold">
-                {isProfit ? '+' : ''}${profitLoss.toFixed(2)}
+                {isProfit ? '+' : ''}€{profitLoss.toFixed(2)}
               </p>
             </div>
           </div>
@@ -312,8 +344,8 @@ function App() {
                 setIsAddingAsset(true)
                 setNewAsset({ 
                   ...newAsset, 
-                  purchase_price: 0, // Let user enter total amount paid
-                  silver_price_at_purchase: currentSilverPrice,
+                  purchase_price: 0, // Let user enter total amount paid in EUR
+                  silver_price_at_purchase: currentSilverPrice, // USD price for chart reference
                   purchase_date: new Date().toISOString().split('T')[0]
                 })
               }}
@@ -334,8 +366,10 @@ function App() {
               </div>
             ) : (
               assets.map((asset) => {
-                const currentWorth = asset.silver_weight_oz * currentSilverPrice
-                const profitLossAsset = currentWorth - asset.purchase_price
+                // Calculate current worth: USD silver price × weight, converted to EUR
+                const currentWorthUSD = asset.silver_weight_oz * currentSilverPrice
+                const currentWorth = convertUSDtoEUR(currentWorthUSD)
+                const profitLossAsset = currentWorth - asset.purchase_price // Both in EUR now
                 const collectorsPremium = calculateCollectorsPremium(asset)
                 const status = getAssetStatus(asset)
                 
@@ -354,10 +388,10 @@ function App() {
                       <div className="flex-1 min-w-0">
                         <h3 className="text-sm font-semibold text-gray-900 truncate">{asset.name}</h3>
                         <p className="text-xs text-gray-500">
-                          {asset.silver_weight_oz.toFixed(3)} oz • Paid: ${asset.purchase_price.toFixed(2)}
+                          {asset.silver_weight_oz.toFixed(3)} oz • Paid: €{asset.purchase_price.toFixed(2)}
                         </p>
                         <p className="text-xs text-gray-400 leading-tight">
-                          Spot: ${asset.silver_price_at_purchase.toFixed(2)}/oz • Premium: ${collectorsPremium.toFixed(2)}
+                          Spot: ${asset.silver_price_at_purchase.toFixed(2)}/oz USD • Premium: €{collectorsPremium.toFixed(2)}
                         </p>
                         <p className="text-xs text-gray-400">
                           {new Date(asset.purchase_date + 'T00:00:00').toLocaleDateString()}
@@ -365,10 +399,10 @@ function App() {
                       </div>
                       <div className="text-right ml-3">
                         <p className="text-sm font-semibold text-gray-900">
-                          ${currentWorth.toFixed(2)}
+                          €{currentWorth.toFixed(2)}
                         </p>
                         <p className={`text-xs font-medium ${getStatusColor()}`}>
-                          {profitLossAsset >= 0 ? '+' : ''}${profitLossAsset.toFixed(2)}
+                          {profitLossAsset >= 0 ? '+' : ''}€{profitLossAsset.toFixed(2)}
                         </p>
                       </div>
                     </div>
@@ -397,27 +431,27 @@ function App() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Total Purchase Price ($)
+                    Total Purchase Price (€)
                   </label>
                   <input
                     type="number"
                     value={newAsset.purchase_price}
                     onChange={(e) => setNewAsset({ ...newAsset, purchase_price: parseFloat(e.target.value) || 0 })}
                     step="0.01"
-                    placeholder="Total amount paid"
+                    placeholder="Total amount paid in EUR"
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-silver-500 focus:border-silver-500"
                   />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Silver Spot Price ($/oz)
+                    Reference Spot Price ($/oz)
                   </label>
                   <input
                     type="number"
                     value={newAsset.silver_price_at_purchase}
                     onChange={(e) => setNewAsset({ ...newAsset, silver_price_at_purchase: parseFloat(e.target.value) || 0 })}
                     step="0.01"
-                    placeholder="Spot price per oz"
+                    placeholder="Spot price in USD"
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-silver-500 focus:border-silver-500"
                   />
                 </div>
